@@ -6,6 +6,10 @@
 [![Version](https://img.shields.io/badge/Version-1.2.1-orange.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+## 下载
+
+前往 [GitHub Releases](https://github.com/zhen-huazhou/MC-Translation-Tool/releases/latest) 下载最新发布包，解压后直接运行 `MC_Hanhua_Tool.exe`，无需安装 Python 或自行打包。
+
 ## 项目简介
 
 本工具用于快速生成整合包汉化补丁。它会读取 `mods` 目录中的 JAR 文件，提取尚未提供 `zh_cn.json` 或中文条目不完整的模组语言文本；同时可自动发现 `config/ftbquests/quests` 中的任务标题、章节标题和描述，调用 AI、百度翻译或 DeepL 完成翻译。工具会按任务书内容自动判断 FTB Quests 的存储类型：本地化键会合并到模组资源包；内联文本或外部语言文件会额外生成可替换的完整 quests 目录。
