@@ -8,7 +8,7 @@ import argparse
 import json
 from pathlib import Path
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 # 确保src目录在sys.path中
 if hasattr(sys, '_MEIPASS'):
@@ -61,8 +61,8 @@ def main_cli(args):
 
     try:
         # 1. 验证输入
-        mods_path = Path(args.mods)
-        if not mods_path.exists():
+        mods_path = Path(args.mods) if args.mods else None
+        if mods_path is not None and not mods_path.exists():
             print(f"错误: Mods文件夹不存在: {args.mods}")
             return 1
 
@@ -82,26 +82,37 @@ def main_cli(args):
         if args.max_workers is not None:
             settings['max_workers'] = max(1, args.max_workers)
 
-        # 3. 扫描模组
-        print(f"正在扫描模组: {args.mods}")
-        scanner = ModScanner(args.mods)
-        mod_infos = scanner.scan_all_mods()
+        # 3. 扫描模组（可选）
+        scanner = None
+        mod_infos = []
+        if args.mods:
+            print(f"正在扫描模组: {args.mods}")
+            scanner = ModScanner(args.mods)
+            mod_infos = scanner.scan_all_mods()
+        else:
+            print("未指定 Mods 文件夹，跳过模组翻译")
 
         if mod_infos:
             summary = scanner.get_summary(mod_infos)
             print("\n模组扫描完成:")
             print(f"  总模组数: {summary['total_mods']}")
-            print(f"  已有中文: {summary['already_translated']}")
-            print(f"  需要翻译: {summary['need_translation']}")
+            print(f"  已有中文文件: {summary['has_zh_cn']}")
+            print(f"  完整汉化: {summary['fully_translated']}")
+            print(
+                f"  部分汉化: {summary['partially_translated']} "
+                f"(缺少 {summary['partial_pending_translation_keys']} 条)"
+            )
+            print(f"  完全无中文: {summary['without_zh_cn']}")
+            print(f"  需要处理: {summary['need_translation']}")
             print(f"  总翻译条目: {summary['total_translation_keys']}")
-        else:
+        elif args.mods:
             print("未找到包含英文语言文件的模组")
 
         # 3.1 扫描 FTB Quests 任务书
         ftb_info = None
         if not args.no_ftb_quests:
             ftb_path = args.ftb_quests
-            if not ftb_path:
+            if not ftb_path and args.mods:
                 detected = detect_ftbquests_directory(args.mods)
                 ftb_path = str(detected) if detected else None
 
@@ -115,11 +126,21 @@ def main_cli(args):
             else:
                 print("\n未检测到 FTB Quests 任务书目录，将仅处理模组文本")
 
-        # 过滤已有中文的模组
+        # 默认只跳过已经完整覆盖英文键的模组，部分汉化会继续补全。
         if not args.force:
-            mod_infos = [m for m in mod_infos if not m.has_zh_cn]
+            before_count = len(mod_infos)
+            mod_infos = [m for m in mod_infos if not m.is_fully_translated]
+            skipped_count = before_count - len(mod_infos)
+            if skipped_count:
+                print(f"\n跳过完整汉化的模组 {skipped_count} 个")
             if mod_infos:
-                print(f"\n跳过已有中文的模组，剩余 {len(mod_infos)} 个")
+                pending_keys = sum(
+                    mod.pending_translation_count for mod in mod_infos
+                )
+                print(
+                    f"待处理模组 {len(mod_infos)} 个，"
+                    f"预计翻译或补全 {pending_keys} 条文本"
+                )
 
         ftb_entry_count = (
             ftb_info.translatable_count if ftb_info is not None else 0
@@ -139,11 +160,21 @@ def main_cli(args):
         completed_jobs = 0
 
         for idx, mod_info in enumerate(mod_infos, 1):
+            source_content = (
+                mod_info.en_us_content
+                if args.force
+                else mod_info.get_pending_en_us_content()
+            )
+            action = (
+                "重新翻译全部"
+                if args.force
+                else ("补全缺失" if mod_info.has_zh_cn else "翻译")
+            )
             print(
-                f"\n[{idx}/{total_mods}] 正在翻译: "
+                f"\n[{idx}/{total_mods}] 正在{action}: "
                 f"{mod_info.mod_name} ({mod_info.mod_id})"
             )
-            print(f"  翻译条目: {len(mod_info.en_us_content)} 条")
+            print(f"  翻译条目: {len(source_content)} 条")
 
             def progress_callback(current, total, message, job_index=idx - 1):
                 ratio = current / total if total else 1
@@ -152,11 +183,13 @@ def main_cli(args):
 
             try:
                 translations = translator.translate_dict(
-                    mod_info.en_us_content,
+                    source_content,
                     progress_callback=progress_callback,
                 )
                 print()
-                mod_translations[mod_info.mod_id] = translations
+                mod_translations[mod_info.mod_id] = (
+                    mod_info.merge_with_existing(translations)
+                )
                 print("  [OK] 翻译完成")
             except KeyboardInterrupt:
                 print("\n\n用户中断")
@@ -417,8 +450,14 @@ def main():
 
     # 选择模式
     if args.cli:
-        if not args.mods:
-            parser.error("命令行模式需要指定 --mods 参数")
+        if not args.mods and not args.ftb_quests:
+            parser.error(
+                "命令行模式至少需要指定 --mods 或 --ftb-quests 参数"
+            )
+        if not args.mods and args.no_ftb_quests:
+            parser.error(
+                "未指定 --mods 时不能同时禁用 FTB Quests 汉化"
+            )
         return main_cli(args)
     else:
         main_gui()

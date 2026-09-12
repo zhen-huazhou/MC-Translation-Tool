@@ -61,6 +61,7 @@
   },
   "ftbquests_settings": {
     "quests_dir": "",
+    "auto_detect": true,
     "auto_import": false
   }
 }

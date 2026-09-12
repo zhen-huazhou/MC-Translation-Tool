@@ -7,9 +7,9 @@ import os
 import json
 import zipfile
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -21,6 +21,32 @@ class ModInfo:
     en_us_content: Dict[str, str]
     has_zh_cn: bool
     assets_path: str  # assets/mod_id路径
+    zh_cn_content: Dict[str, str] = field(default_factory=dict)
+    missing_translation_keys: List[str] = field(default_factory=list)
+
+    @property
+    def is_fully_translated(self) -> bool:
+        """是否已经覆盖全部英文语言键且没有空译文。"""
+        return self.has_zh_cn and not self.missing_translation_keys
+
+    @property
+    def pending_translation_count(self) -> int:
+        """当前模组需要翻译或补全的条目数。"""
+        return len(self.missing_translation_keys)
+
+    def get_pending_en_us_content(self) -> Dict[str, str]:
+        """返回缺失或空译文对应的英文源文本。"""
+        return {
+            key: self.en_us_content[key]
+            for key in self.missing_translation_keys
+            if key in self.en_us_content
+        }
+
+    def merge_with_existing(self, translations: Dict[str, str]) -> Dict[str, str]:
+        """保留已有译文和额外键，并合并本次生成结果。"""
+        merged = dict(self.zh_cn_content)
+        merged.update(translations)
+        return merged
 
 
 class ModScanner:
@@ -49,75 +75,130 @@ class ModScanner:
 
         for jar_file in jar_files:
             try:
-                mod_info = self._scan_single_mod(jar_file)
-                if mod_info:
-                    mod_infos.append(mod_info)
+                mod_infos.extend(self._scan_single_mod(jar_file))
             except Exception as e:
                 print(f"警告: 扫描 {jar_file.name} 时出错: {e}")
                 continue
 
         return mod_infos
 
-    def _scan_single_mod(self, jar_path: Path) -> Optional[ModInfo]:
+    def _scan_single_mod(self, jar_path: Path) -> List[ModInfo]:
         """
-        扫描单个模组JAR文件
+        扫描单个模组JAR文件中的全部语言命名空间。
 
         Args:
             jar_path: JAR文件路径
 
         Returns:
-            模组信息，如果不需要翻译则返回None
+            模组信息列表；没有可处理的语言文件时返回空列表
         """
+        mod_infos: List[ModInfo] = []
+
         try:
             with zipfile.ZipFile(jar_path, 'r') as jar:
-                # 查找所有可能的语言文件路径
                 file_list = jar.namelist()
-
-                # 查找 assets/*/lang/en_us.json
                 en_us_files = [f for f in file_list if self._is_en_us_lang_file(f)]
 
-                if not en_us_files:
-                    # print(f"跳过 {jar_path.name}: 未找到英文语言文件")
-                    return None
+                for en_us_path in en_us_files:
+                    try:
+                        mod_id = self._extract_mod_id(en_us_path)
+                        if not mod_id:
+                            print(f"警告: 无法从 {en_us_path} 提取mod_id")
+                            continue
 
-                # 使用第一个找到的英文语言文件
-                en_us_path = en_us_files[0]
+                        with jar.open(en_us_path) as f:
+                            en_us_content = json.loads(f.read().decode('utf-8'))
 
-                # 提取mod_id (从路径 assets/mod_id/lang/en_us.json)
-                mod_id = self._extract_mod_id(en_us_path)
-                if not mod_id:
-                    print(f"警告: 无法从 {en_us_path} 提取mod_id")
-                    return None
+                        if not isinstance(en_us_content, dict):
+                            raise ValueError("英文语言文件顶层必须是 JSON 对象")
 
-                # 读取英文语言文件
-                with jar.open(en_us_path) as f:
-                    en_us_content = json.loads(f.read().decode('utf-8'))
+                        zh_cn_path = self._find_zh_cn_path(
+                            en_us_path, file_list
+                        )
+                        has_zh_cn = zh_cn_path is not None
+                        zh_cn_content = self._load_zh_cn_content(
+                            jar, zh_cn_path
+                        )
+                        missing_keys = self._find_missing_translation_keys(
+                            en_us_content, zh_cn_content
+                        )
+                        mod_name = self._get_mod_name(
+                            jar, mod_id, en_us_content
+                        )
 
-                # 检查是否已有中文文件
-                zh_cn_path = en_us_path.replace('en_us.json', 'zh_cn.json')
-                has_zh_cn = zh_cn_path in file_list
-
-                # 尝试获取模组名称
-                mod_name = self._get_mod_name(jar, mod_id, en_us_content)
-
-                return ModInfo(
-                    mod_id=mod_id,
-                    mod_name=mod_name,
-                    jar_path=str(jar_path),
-                    en_us_content=en_us_content,
-                    has_zh_cn=has_zh_cn,
-                    assets_path=f"assets/{mod_id}"
-                )
+                        mod_infos.append(ModInfo(
+                            mod_id=mod_id,
+                            mod_name=mod_name,
+                            jar_path=str(jar_path),
+                            en_us_content=en_us_content,
+                            has_zh_cn=has_zh_cn,
+                            assets_path=f"assets/{mod_id}",
+                            zh_cn_content=zh_cn_content,
+                            missing_translation_keys=missing_keys,
+                        ))
+                    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+                        print(
+                            f"警告: {jar_path.name} 中的 {en_us_path} "
+                            f"无法处理: {e}"
+                        )
+                    except Exception as e:
+                        print(
+                            f"警告: 处理 {jar_path.name} 中的 {en_us_path} "
+                            f"时出错: {e}"
+                        )
 
         except zipfile.BadZipFile:
             print(f"警告: {jar_path.name} 不是有效的JAR文件")
-            return None
-        except json.JSONDecodeError:
-            print(f"警告: {jar_path.name} 的语言文件JSON格式错误")
-            return None
         except Exception as e:
             print(f"警告: 处理 {jar_path.name} 时出错: {e}")
-            return None
+
+        return mod_infos
+
+    @staticmethod
+    def _find_zh_cn_path(
+        en_us_path: str, file_list: List[str]
+    ) -> Optional[str]:
+        """查找与英文文件同目录的 zh_cn.json，并兼容文件名大小写。"""
+        expected = str(PurePosixPath(en_us_path).with_name('zh_cn.json'))
+        if expected in file_list:
+            return expected
+
+        expected_lower = expected.lower()
+        return next(
+            (path for path in file_list if path.lower() == expected_lower),
+            None,
+        )
+
+    @staticmethod
+    def _load_zh_cn_content(
+        jar: zipfile.ZipFile, zh_cn_path: Optional[str]
+    ) -> Dict[str, str]:
+        """读取中文语言文件；损坏或非对象内容按缺失中文处理。"""
+        if not zh_cn_path:
+            return {}
+
+        try:
+            with jar.open(zh_cn_path) as f:
+                content = json.loads(f.read().decode('utf-8'))
+            if not isinstance(content, dict):
+                raise ValueError("中文语言文件顶层必须是 JSON 对象")
+            return content
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            print(f"警告: {zh_cn_path} 无法读取，将按缺失全部中文处理: {e}")
+            return {}
+
+    @staticmethod
+    def _find_missing_translation_keys(
+        en_us_content: Dict[str, str],
+        zh_cn_content: Dict[str, str],
+    ) -> List[str]:
+        """返回中文文件缺失或值为空的英文语言键。"""
+        missing_keys = []
+        for key in en_us_content:
+            translated = zh_cn_content.get(key)
+            if not isinstance(translated, str) or not translated.strip():
+                missing_keys.append(key)
+        return missing_keys
 
     def _is_en_us_lang_file(self, file_path: str) -> bool:
         """
@@ -143,7 +224,7 @@ class ModScanner:
         Returns:
             mod_id
         """
-        match = re.match(r'^assets/([^/]+)/lang/', lang_file_path)
+        match = re.match(r'^assets/([^/]+)/lang/', lang_file_path, re.IGNORECASE)
         if match:
             return match.group(1)
         return None
@@ -206,15 +287,38 @@ class ModScanner:
             摘要信息字典
         """
         total_mods = len(mod_infos)
-        already_translated = sum(1 for mod in mod_infos if mod.has_zh_cn)
-        need_translation = total_mods - already_translated
+        has_zh_cn = sum(1 for mod in mod_infos if mod.has_zh_cn)
+        fully_translated = sum(
+            1 for mod in mod_infos if mod.is_fully_translated
+        )
+        partially_translated = sum(
+            1
+            for mod in mod_infos
+            if mod.has_zh_cn and not mod.is_fully_translated
+        )
+        without_zh_cn = total_mods - has_zh_cn
+        need_translation = total_mods - fully_translated
         total_keys = sum(len(mod.en_us_content) for mod in mod_infos)
+        pending_keys = sum(
+            mod.pending_translation_count for mod in mod_infos
+        )
+        partial_pending_keys = sum(
+            mod.pending_translation_count
+            for mod in mod_infos
+            if mod.has_zh_cn and not mod.is_fully_translated
+        )
 
         return {
             'total_mods': total_mods,
-            'already_translated': already_translated,
+            'has_zh_cn': has_zh_cn,
+            'already_translated': fully_translated,
+            'fully_translated': fully_translated,
+            'partially_translated': partially_translated,
+            'without_zh_cn': without_zh_cn,
             'need_translation': need_translation,
-            'total_translation_keys': total_keys
+            'total_translation_keys': total_keys,
+            'pending_translation_keys': pending_keys,
+            'partial_pending_translation_keys': partial_pending_keys,
         }
 
 
@@ -235,15 +339,23 @@ def test_scanner():
     summary = scanner.get_summary(mod_infos)
     print(f"\n扫描完成!")
     print(f"总模组数: {summary['total_mods']}")
-    print(f"已有中文: {summary['already_translated']}")
-    print(f"需要翻译: {summary['need_translation']}")
+    print(f"已有中文文件: {summary['has_zh_cn']}")
+    print(f"完整汉化: {summary['fully_translated']}")
+    print(
+        f"部分汉化: {summary['partially_translated']}，"
+        f"缺少 {summary['partial_pending_translation_keys']} 条"
+    )
+    print(f"完全无中文: {summary['without_zh_cn']}")
+    print(f"需要处理: {summary['need_translation']}")
     print(f"总翻译条目: {summary['total_translation_keys']}")
 
-    print("\n需要翻译的模组:")
+    print("\n需要处理的模组:")
     for mod in mod_infos:
-        if not mod.has_zh_cn:
-            print(f"  - {mod.mod_name} ({mod.mod_id}): {len(mod.en_us_content)} 条")
-
+        if not mod.is_fully_translated:
+            print(
+                f"  - {mod.mod_name} ({mod.mod_id}): "
+                f"缺少或为空 {mod.pending_translation_count} 条"
+            )
 
 if __name__ == '__main__':
     test_scanner()

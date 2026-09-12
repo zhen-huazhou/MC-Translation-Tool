@@ -3,12 +3,12 @@
 一键扫描 Minecraft 整合包中的模组语言文件与 FTB Quests 任务书，自动翻译并生成可安装的简体中文补丁。
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/Version-1.2.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/Version-1.2.1-orange.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## 项目简介
 
-本工具用于快速生成整合包汉化补丁。它会读取 `mods` 目录中的 JAR 文件，提取尚未提供 `zh_cn.json` 的模组语言文件；同时可自动发现 `config/ftbquests/quests` 中的任务标题、章节标题和描述，调用 AI、百度翻译或 DeepL 完成翻译。工具会按任务书内容自动判断 FTB Quests 的存储类型：本地化键会合并到模组资源包；内联文本或外部语言文件会额外生成可替换的完整 quests 目录。
+本工具用于快速生成整合包汉化补丁。它会读取 `mods` 目录中的 JAR 文件，提取尚未提供 `zh_cn.json` 或中文条目不完整的模组语言文本；同时可自动发现 `config/ftbquests/quests` 中的任务标题、章节标题和描述，调用 AI、百度翻译或 DeepL 完成翻译。工具会按任务书内容自动判断 FTB Quests 的存储类型：本地化键会合并到模组资源包；内联文本或外部语言文件会额外生成可替换的完整 quests 目录。
 
 ## 使用声明
 
@@ -24,8 +24,10 @@
 - 支持 AI API（DeepSeek/OpenAI 兼容接口）、百度翻译和 DeepL。
 - 自动扫描 Forge、Fabric 等模组，无需完整解压 JAR。
 - 自动检测 FTB Quests 内联文本、本地化键、外部语言文件及混合模式。
+- 模组与 FTB Quests 任务书可单独汉化，也可组合处理；未提供任何数据源时禁用开始按钮。
 - 本地化键直接合并到资源包；内联式任务书生成完整 quests 目录，并可一键备份替换。
-- 自动跳过已经包含 `zh_cn.json` 或已有中文任务书译文的条目，也可选择强制翻译模组。
+- 自动区分完整汉化、部分汉化和无中文模组；部分汉化只补全缺失或空值条目，并保留已有译文。
+- 可选择强制重新翻译全部英文条目；已有中文任务书译文仍会保留。
 - 翻译结果按接口、模型和配置隔离缓存，避免重复请求和费用。
 - 自动去重、批量请求并支持配置并发数。
 - 根据 MC 版本自动选择资源包 `pack_format`。
@@ -72,15 +74,15 @@ python src/main.py --cli `
 
 | 参数 | 说明 |
 | --- | --- |
-| `--mods` | 模组文件夹路径 |
+| `--mods` | 模组文件夹路径；可与 `--ftb-quests` 单独或同时使用 |
 | `--output` | 输出资源包路径 |
 | `--api-type` | `ai`、`baidu` 或 `deepl` |
 | `--api-key` | 覆盖配置文件中的 API Key |
 | `--pack-format` | 手动指定资源包格式 |
 | `--batch-size` | 每批翻译条目数 |
 | `--max-workers` | 并发请求数 |
-| `--force` | 连已有中文的模组也重新翻译 |
-| `--ftb-quests` | FTB Quests 的 `quests` 目录；默认自动检测 |
+| `--force` | 忽略完整汉化跳过逻辑，强制重新翻译全部英文条目 |
+| `--ftb-quests` | FTB Quests 的 `quests` 目录；指定 `--mods` 时默认自动检测，也可单独使用 |
 | `--ftb-output` | 指定完整 quests 汉化目录的输出根目录 |
 | `--ftb-auto-import` | 自动备份并替换内联/外部语言模式的 quests 目录 |
 | `--no-ftb-quests` | 禁用 FTB Quests 任务书汉化 |
@@ -168,7 +170,7 @@ API Key 可以通过界面保存到 `user_config.json`。该文件包含敏感�
 | `user_config.json` | 保存界面配置和 API Key |
 | `cache/translation_cache.json` | 保存翻译缓存 |
 
-“使用翻译缓存”和“跳过已有 `zh_cn.json` 的模组”位于高级设置页。取消勾选后可清除对应行为，重新翻译时会覆盖或刷新相关结果。
+“使用翻译缓存”“智能补全部分汉化的模组，完整汉化仍跳过”和“自动检测 FTB Quests 目录”位于高级设置页。自动检测默认开启；关闭后如果 FTB Quests 路径为空，将不执行任务书汉化。智能补全默认只跳过完整汉化模组；取消勾选后会忽略已有中文并强制重新翻译全部英文条目，同时保留中文文件中的额外键。
 
 ## MC 版本与 pack_format
 
@@ -245,6 +247,7 @@ python create_release.py
 ## 常见问题
 
 - 扫描不到模组：确认选择的是包含 `.jar` 文件的 `mods` 目录。
+- 部分已有中文的模组也被处理：这是正常行为，工具会只补全相对英文文件缺失或为空的键，并保留已有中文译文。
 - 翻译失败：检查 API Key、余额、网络连接和服务地址。
 - 资源包无效：确认 MC 版本与 `pack_format` 对应。
 - FTB Quests 未汉化：确认任务目录位于 `config/ftbquests/quests`，或通过界面/`--ftb-quests` 手动指定。
@@ -259,7 +262,7 @@ python create_release.py
 
 ### 提交 Bug 时请尽量提供
 
-1. 工具版本，例如 `v1.2.0`。
+1. 工具版本，例如 `v1.2.1`。
 2. Windows 版本及是否为 64 位系统。
 3. 使用的运行方式：EXE、源码运行或 CLI。
 4. Minecraft 版本、整合包名称及使用的翻译接口。

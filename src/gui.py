@@ -30,7 +30,7 @@ from translator import (
     TranslatorFactory,
 )
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 COLORS = {
     "background": "#eef2f7",
     "card": "#ffffff",
@@ -754,11 +754,11 @@ class RoundedSpinbox(tk.Canvas):
 
 
 class TranslationApp:
-    """MC 模组汉化工具主应用。"""
+    """MC 整合包汉化工具主应用。"""
 
     def __init__(self, root):
         self.root = root
-        self.root.title(f"Minecraft 模组汉化工具 v{APP_VERSION}")
+        self.root.title(f"Minecraft 整合包汉化工具 v{APP_VERSION}")
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         window_width = min(1080, max(860, screen_width - 100))
@@ -773,6 +773,7 @@ class TranslationApp:
 
         self.mods_path = tk.StringVar()
         self.ftb_quests_path = tk.StringVar()
+        self.ftb_auto_detect = tk.BooleanVar(value=True)
         self.ftb_auto_import = tk.BooleanVar(value=False)
         self.output_path = tk.StringVar(value="./汉化补丁.zip")
         self.api_type = tk.StringVar(value="ai")
@@ -801,6 +802,11 @@ class TranslationApp:
         self._configure_styles()
         self._create_widgets()
         self.load_config()
+        self.mods_path.trace_add("write", self._on_translation_path_changed)
+        self.ftb_quests_path.trace_add(
+            "write", self._on_translation_path_changed
+        )
+        self._update_start_button_state()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self._poll_after_id = self.root.after(80, self._poll_ui_queue)
@@ -1013,7 +1019,7 @@ class TranslationApp:
         ).grid(row=2, column=2, padx=(10, 0), pady=5)
         ttk.Label(
             paths_content,
-            text="留空时自动从 Mods 同级目录检测 config/ftbquests/quests。",
+            text="路径为空时是否自动检测，由高级设置控制。",
             style="Muted.TLabel",
         ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(0, 3))
 
@@ -1257,11 +1263,20 @@ class TranslationApp:
 
         self.skip_existing_checkbox = RoundedCheckbutton(
             content,
-            text="跳过整合包中已经含有 zh_cn.json 的模组",
+            text="智能补全部分汉化的模组，完整汉化仍跳过",
             variable=self.skip_existing,
         )
         self.skip_existing_checkbox.grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(0, 5)
+        )
+
+        self.ftb_auto_detect_checkbox = RoundedCheckbutton(
+            content,
+            text="自动检测 FTB Quests 目录（任务书路径为空时）",
+            variable=self.ftb_auto_detect,
+        )
+        self.ftb_auto_detect_checkbox.grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(0, 5)
         )
 
         self.ftb_auto_import_checkbox = RoundedCheckbutton(
@@ -1270,11 +1285,11 @@ class TranslationApp:
             variable=self.ftb_auto_import,
         )
         self.ftb_auto_import_checkbox.grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(0, 12)
+            row=3, column=0, columnspan=3, sticky="w", pady=(0, 12)
         )
 
         ttk.Label(content, text="批量大小").grid(
-            row=3, column=0, sticky="w", pady=5
+            row=4, column=0, sticky="w", pady=5
         )
         RoundedSpinbox(
             content,
@@ -1282,7 +1297,7 @@ class TranslationApp:
             to=50,
             textvariable=self.batch_size,
             width=82,
-        ).grid(row=3, column=1, sticky="w", padx=(12, 0), pady=5)
+        ).grid(row=4, column=1, sticky="w", padx=(12, 0), pady=5)
         ttk.Label(
             content,
             text="AI/DeepL 每批处理条数，建议 10-20。",
@@ -1290,7 +1305,7 @@ class TranslationApp:
         ).grid(row=4, column=2, sticky="w", padx=(14, 0), pady=5)
 
         ttk.Label(content, text="并发请求数").grid(
-            row=3, column=0, sticky="w", pady=5
+            row=5, column=0, sticky="w", pady=5
         )
         RoundedSpinbox(
             content,
@@ -1298,12 +1313,12 @@ class TranslationApp:
             to=8,
             textvariable=self.max_workers,
             width=82,
-        ).grid(row=4, column=1, sticky="w", padx=(12, 0), pady=5)
+        ).grid(row=5, column=1, sticky="w", padx=(12, 0), pady=5)
         ttk.Label(
             content,
             text="建议 2-4；过高可能触发 API 限流。",
             style="Muted.TLabel",
-        ).grid(row=4, column=2, sticky="w", padx=(14, 0), pady=5)
+        ).grid(row=5, column=2, sticky="w", padx=(14, 0), pady=5)
 
     def _build_log_area(self, parent):
         log_card = RoundedPanel(parent, title="运行日志", padding=14)
@@ -1418,13 +1433,37 @@ class TranslationApp:
             background=COLORS["card"],
         )
         self.progress_bar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+
+    def _on_translation_path_changed(self, *args):
+        """路径变化时同步开始按钮状态。"""
+        self._update_start_button_state()
+
+    def _update_start_button_state(self):
+        """仅当至少提供一个汉化数据源时启用开始按钮。"""
+        if not hasattr(self, "start_button"):
+            return
+        has_source = bool(
+            self.mods_path.get().strip()
+            or self.ftb_quests_path.get().strip()
+        )
+        state = (
+            tk.NORMAL
+            if has_source and not self.is_running
+            else tk.DISABLED
+        )
+        self.start_button.config(state=state)
+
     def browse_mods_folder(self):
         folder = filedialog.askdirectory(title="选择 Mods 文件夹")
         if folder:
             self.mods_path.set(folder)
-            detected = detect_ftbquests_directory(folder)
-            if detected and not self.ftb_quests_path.get().strip():
-                self.ftb_quests_path.set(str(detected))
+            if (
+                self.ftb_auto_detect.get()
+                and not self.ftb_quests_path.get().strip()
+            ):
+                detected = detect_ftbquests_directory(folder)
+                if detected:
+                    self.ftb_quests_path.set(str(detected))
 
     def browse_ftb_quests_folder(self):
         folder = filedialog.askdirectory(
@@ -1514,7 +1553,10 @@ class TranslationApp:
 
     def _set_running_state(self, running: bool):
         self.is_running = running
-        self.start_button.config(state=tk.DISABLED if running else tk.NORMAL)
+        if running:
+            self.start_button.config(state=tk.DISABLED)
+        else:
+            self._update_start_button_state()
         self.stop_button.config(state=tk.NORMAL if running else tk.DISABLED)
         self.clear_cache_button.config(
             state=tk.DISABLED if running else tk.NORMAL
@@ -1527,8 +1569,11 @@ class TranslationApp:
         mods_path = self.mods_path.get().strip()
         output_path = self.output_path.get().strip()
         ftb_quests_path = self.ftb_quests_path.get().strip()
-        if not mods_path:
-            messagebox.showerror("缺少 Mods 文件夹", "请先选择 Mods 文件夹。")
+        if not mods_path and not ftb_quests_path:
+            messagebox.showerror(
+                "缺少汉化目录",
+                "请至少选择 Mods 文件夹或 FTB Quests 目录。",
+            )
             return
         if not output_path:
             messagebox.showerror("缺少输出路径", "请先选择输出文件。")
@@ -1548,7 +1593,11 @@ class TranslationApp:
             messagebox.showerror("缺少 DeepL 配置", "请填写 DeepL Auth Key。")
             return
 
-        if mods_path and not ftb_quests_path:
+        if (
+            self.ftb_auto_detect.get()
+            and mods_path
+            and not ftb_quests_path
+        ):
             detected = detect_ftbquests_directory(mods_path)
             if detected:
                 ftb_quests_path = str(detected)
@@ -1600,19 +1649,18 @@ class TranslationApp:
     ):
         try:
             self.log("=== 开始汉化流程 ===")
-            self._queue_event("status", value="正在扫描模组…")
 
-            scanner = ModScanner(mods_path)
-            mod_infos = scanner.scan_all_mods()
+            scanner = None
+            mod_infos = []
+            if mods_path:
+                self._queue_event("status", value="正在扫描模组…")
+                scanner = ModScanner(mods_path)
+                mod_infos = scanner.scan_all_mods()
+            else:
+                self.log("未选择 Mods 文件夹，跳过模组翻译。", "info")
 
             ftb_info = None
             ftb_entry_count = 0
-            if not ftb_quests_path:
-                detected = detect_ftbquests_directory(mods_path)
-                if detected:
-                    ftb_quests_path = str(detected)
-                    self.ftb_quests_path.set(ftb_quests_path)
-
             if ftb_quests_path:
                 try:
                     self.log(f"正在扫描 FTB Quests：{ftb_quests_path}")
@@ -1633,27 +1681,52 @@ class TranslationApp:
                     ftb_info = None
                     ftb_entry_count = 0
             else:
-                self.log("未检测到 FTB Quests 任务书目录。", "info")
+                self.log(
+                    "未启用 FTB Quests 汉化或未指定任务书目录。",
+                    "info",
+                )
 
             if mod_infos:
                 summary = scanner.get_summary(mod_infos)
                 self.log(
-                    f"模组扫描完成：共 {summary['total_mods']} 个模组",
+                    f"模组扫描完成：共 {summary['total_mods']} 个命名空间",
                     "success",
                 )
                 self.log(
-                    f"已有中文 {summary['already_translated']} 个，"
-                    f"待翻译 {summary['need_translation']} 个，"
-                    f"总计 {summary['total_translation_keys']} 条文本"
+                    f"已有中文文件 {summary['has_zh_cn']} 个，"
+                    f"完整汉化 {summary['fully_translated']} 个"
                 )
-            else:
+                self.log(
+                    f"部分汉化 {summary['partially_translated']} 个，"
+                    f"缺少 {summary['partial_pending_translation_keys']} 条；"
+                    f"完全无中文 {summary['without_zh_cn']} 个"
+                )
+                self.log(
+                    f"总翻译条目 {summary['total_translation_keys']} 条，"
+                    f"需要处理 {summary['need_translation']} 个命名空间"
+                )
+            elif mods_path:
                 self.log("未找到包含 en_us.json 的模组。", "warning")
 
             if skip_existing:
-                mod_infos = [item for item in mod_infos if not item.has_zh_cn]
-                if mod_infos:
+                before_count = len(mod_infos)
+                mod_infos = [
+                    item for item in mod_infos
+                    if not item.is_fully_translated
+                ]
+                skipped_count = before_count - len(mod_infos)
+                if skipped_count:
                     self.log(
-                        f"跳过已有中文的模组后，剩余 {len(mod_infos)} 个",
+                        f"已跳过完整汉化的命名空间 {skipped_count} 个",
+                        "info",
+                    )
+                if mod_infos:
+                    pending_keys = sum(
+                        item.pending_translation_count for item in mod_infos
+                    )
+                    self.log(
+                        f"待处理命名空间 {len(mod_infos)} 个，"
+                        f"预计翻译或补全 {pending_keys} 条文本",
                         "info",
                     )
 
@@ -1673,9 +1746,20 @@ class TranslationApp:
                 if not self.is_running:
                     raise TranslationCancelled("翻译已取消")
 
+                source_content = (
+                    mod_info.en_us_content
+                    if not skip_existing
+                    else mod_info.get_pending_en_us_content()
+                )
+                action = (
+                    "重新翻译全部"
+                    if not skip_existing
+                    else ("补全缺失" if mod_info.has_zh_cn else "翻译")
+                )
                 self.log(
-                    f"\n[{index}/{total_mods}] {mod_info.mod_name} "
-                    f"({mod_info.mod_id})，{len(mod_info.en_us_content)} 条"
+                    f"\n[{index}/{total_mods}] {action}："
+                    f"{mod_info.mod_name} ({mod_info.mod_id})，"
+                    f"{len(source_content)} 条"
                 )
 
                 def progress_callback(
@@ -1689,17 +1773,19 @@ class TranslationApp:
                     self._queue_event(
                         "status",
                         value=(
-                            f"正在翻译 {index}/{total_mods}：{detail}"
+                            f"正在处理 {index}/{total_mods}：{detail}"
                         ),
                     )
 
                 translations = translator.translate_dict(
-                    mod_info.en_us_content,
+                    source_content,
                     progress_callback=progress_callback,
                     cancel_check=lambda: not self.is_running,
                 )
-                translations_by_mod[mod_info.mod_id] = translations
-                self.log(f"翻译完成：{mod_info.mod_name}", "success")
+                translations_by_mod[mod_info.mod_id] = (
+                    mod_info.merge_with_existing(translations)
+                )
+                self.log(f"处理完成：{mod_info.mod_name}", "success")
                 completed_jobs += 1
 
             if ftb_info is not None and ftb_entry_count:
@@ -1898,6 +1984,7 @@ class TranslationApp:
             },
             "ftbquests_settings": {
                 "quests_dir": self.ftb_quests_path.get().strip(),
+                "auto_detect": bool(self.ftb_auto_detect.get()),
                 "auto_import": bool(self.ftb_auto_import.get()),
             },
         }
@@ -1956,7 +2043,12 @@ class TranslationApp:
                 max(1, int(resource_settings.get("pack_format", 15)))
             )
             self.ftb_quests_path.set(ftb_settings.get("quests_dir", ""))
-            self.ftb_auto_import.set(bool(ftb_settings.get("auto_import", False)))
+            self.ftb_auto_detect.set(
+                bool(ftb_settings.get("auto_detect", True))
+            )
+            self.ftb_auto_import.set(
+                bool(ftb_settings.get("auto_import", False))
+            )
 
             self.on_api_type_changed()
             self.on_mc_version_changed()
